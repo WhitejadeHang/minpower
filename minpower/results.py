@@ -6,6 +6,7 @@
 import logging
 import pandas as pd
 import numpy as np
+from .optimization import value
 
 from .commonscripts import (
     update_attributes,
@@ -20,7 +21,6 @@ from .commonscripts import (
     set_trace,
 )
 from .schedule import TimeIndex
-from .optimization import value
 from .config import user_config
 import matplotlib
 import matplotlib.pyplot as plot
@@ -276,12 +276,20 @@ class Solution(object):
         ]
 
     def info_cost(self):
+        try:
+            # 尝试计算百分比差异
+            diff_value = value(self.costerror)
+            diff_str = "{:.2%}".format(diff_value)
+        except (TypeError, ValueError):
+            # 如果无法计算，则使用一个默认值
+            diff_str = "N/A"
+            
         return [
             "objective cost={}".format(self.objective),
             "total cost of generation={}".format(self.totalcost_generation.sum().sum()),
             "linearized fuel cost of generation={}".format(self.fuelcost.sum().sum()),
             "polynomial fuel cost of generation={}".format(self.fuelcost_true),
-            "percentage difference\t\t={diff:.2%}".format(diff=self.costerror),
+            "percentage difference\t\t=" + diff_str,
         ]
 
 
@@ -540,6 +548,11 @@ class Solution_UC(Solution):
         if not do_plotting:
             return
 
+        # 检查是否有足够的数据进行绘图
+        if len(self.times) == 0 or self.generators_power.empty:
+            logging.warning("没有足够的数据进行绘图")
+            return
+            
         prices = [self.lmps[str(t)][0] for t in self.times]
         stack_plot_UC(
             self,

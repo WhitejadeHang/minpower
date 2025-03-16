@@ -69,7 +69,20 @@ fields_initial = ["status", "power", "hoursinstatus"]
 
 def nice_names(df):
     """drop the case and spaces from all column names"""
-    return df.rename(columns=dict([(col, drop_case_spaces(col)) for col in df.columns]))
+    # 创建列名映射
+    column_map = {}
+    for col in df.columns:
+        nice_col = drop_case_spaces(col)
+        column_map[col] = nice_col
+        
+        # 特殊处理"cost curve points filename"列
+        if nice_col == "costcurvepointsfilename" or nice_col == "costcurvepointsfile" or nice_col == "costcurvepointfilename":
+            column_map[col] = "costcurvepointsfilename"
+        # 处理其他可能的特殊列名
+        elif "costcurve" in nice_col and "file" in nice_col:
+            column_map[col] = "costcurvepointsfilename"
+    
+    return df.rename(columns=column_map)
 
 
 def parse_standalone(storage, times):
@@ -301,10 +314,18 @@ def build_class_list(data, model, times=None, timeseries=None):
             valid_fields = valid_fields.union(pd.Index(gen_extra_fields))
         invalid_fields = row.index.difference(valid_fields)
         if len(invalid_fields) > 0:
-            raise ValueError(
-                "invalid fields in model:: {}".format(invalid_fields.tolist())
-            )
+            # 忽略type字段
+            if len(invalid_fields) == 1 and invalid_fields[0] == "type":
+                pass
+            else:
+                raise ValueError(
+                    "invalid fields in model:: {}".format(invalid_fields.tolist())
+                )
             # logging.warning
+
+        # 从row中移除type字段
+        if "type" in row:
+            row = row.drop("type")
 
         kwds = row[row.index.isin(fields[model.__name__])].to_dict()
 
@@ -337,10 +358,15 @@ def build_class_list(data, model, times=None, timeseries=None):
 
             # add a custom bid points file with {power, cost} columns
             if bid_points_filename:
-                kwds["bid_points"] = read_bid_points(
-                    joindir(datadir, bid_points_filename)
-                )
-                kwds["costcurveequation"] = None
+                try:
+                    logging.debug(f"Reading bid points from {bid_points_filename}")
+                    bid_points_file_path = joindir(datadir, bid_points_filename)
+                    kwds["bid_points"] = read_bid_points(bid_points_file_path)
+                    logging.debug(f"Bid points data: {kwds['bid_points']}")
+                    kwds["costcurveequation"] = None
+                except Exception as e:
+                    logging.error(f"Error reading bid points file {bid_points_filename}: {e}")
+                    raise
 
         try:
             obj = row_model(index=i, **kwds)
@@ -355,8 +381,30 @@ def build_class_list(data, model, times=None, timeseries=None):
 
 def read_bid_points(filename):
     bid_points = read_csv(filename)
-    # return a dataframe of bidpoints
-    return bid_points[["power", "cost"]].astype(float)
+    # 确保列名正确
+    if "power" not in bid_points.columns or "cost" not in bid_points.columns:
+        # 尝试使用第一列作为power，第二列作为cost
+        if len(bid_points.columns) >= 2:
+            bid_points.columns = ["power", "cost"] + list(bid_points.columns[2:])
+        else:
+            raise ValueError(f"Bid points file {filename} must have at least two columns for power and cost")
+    
+    # 确保数据类型为浮点数
+    try:
+        bid_points["power"] = bid_points["power"].astype(float)
+        bid_points["cost"] = bid_points["cost"].astype(float)
+    except ValueError as e:
+        logging.warning(f"Error converting bid points to float in {filename}: {e}")
+        # 尝试逐行转换
+        for i in range(len(bid_points)):
+            try:
+                bid_points.loc[i, "power"] = float(bid_points.loc[i, "power"])
+                bid_points.loc[i, "cost"] = float(bid_points.loc[i, "cost"])
+            except (ValueError, TypeError):
+                logging.warning(f"Could not convert row {i} in {filename} to float")
+    
+    # 返回只包含power和cost列的DataFrame
+    return bid_points[["power", "cost"]]
 
 
 def setup_times(generators_data, loads_data):

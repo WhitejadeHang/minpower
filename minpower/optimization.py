@@ -6,7 +6,7 @@ import logging
 import time
 import weakref
 from .commonscripts import quiet, not_quiet, update_attributes, joindir
-from pyomo.core.expr.current import evaluate_expression
+from pyomo.core.expr import evaluate_expression
 from pyomo import environ as pyomo
 from pyomo.opt.base import solvers as cooprsolver
 from .config import user_config
@@ -147,6 +147,10 @@ class OptimizationObject(object):
     def add_constraint(self, name, time, expression):
         """Create a new constraint and add it to the object's constraints and the model's constraints."""
         cname = self._t_id(name, time)
+        # 检查约束是否已存在
+        if hasattr(self._parent_problem()._model, cname):
+            logging.debug(f"约束 {cname} 已存在，跳过创建")
+            return
         self._parent_problem().add_component_to_problem(
             pyomo.Constraint(name=cname, expr=expression)
         )

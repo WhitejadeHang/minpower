@@ -238,13 +238,28 @@ class Bus(OptimizationObject):
                 load.create_constraints(times)
         nBus = len(buses)
         for time in times:
-            self.add_constraint(
-                "power balance", time, self.power_balance(time, Bmatrix, buses) == 0
-            )  # power balance must be zero
-            if nBus > 1 and self.isSwing:
+            try:
+                # 检查约束是否已存在
+                constraint_name = self._t_id("power balance", time)
+                if hasattr(self._parent_problem()._model, constraint_name):
+                    logging.debug(f"约束 {constraint_name} 已存在，跳过创建")
+                    continue
+                
                 self.add_constraint(
-                    "swing bus", time, self.angle(time) == 0
-                )  # swing bus has angle=0
+                    "power balance", time, self.power_balance(time, Bmatrix, buses) == 0
+                )  # power balance must be zero
+                
+                if nBus > 1 and self.isSwing:
+                    swing_constraint_name = self._t_id("swing bus", time)
+                    if hasattr(self._parent_problem()._model, swing_constraint_name):
+                        logging.debug(f"约束 {swing_constraint_name} 已存在，跳过创建")
+                        continue
+                    
+                    self.add_constraint(
+                        "swing bus", time, self.angle(time) == 0
+                    )  # swing bus has angle=0
+            except Exception as e:
+                logging.error(f"创建约束时出错 (bus={self}, time={time}): {e}")
         return
 
     # def clear_constraints(self):
@@ -579,19 +594,50 @@ class PowerSystem(OptimizationProblem):
         # recalc the power balance constraint
         for bus in self.buses:
             for time in const_times:
-                bus._remove_component("power balance", time)
-            bus.create_constraints(
-                const_times, self.Bmatrix, self.buses, include_children=False
-            )
+                try:
+                    # 尝试移除约束，如果约束不存在则忽略错误
+                    bus._remove_component("power balance", time)
+                except (AttributeError, KeyError):
+                    logging.debug(f"No power balance constraint to remove for bus {bus} at time {time}")
+                    pass
+            
+            try:
+                # 创建约束前检查是否已存在
+                bus.create_constraints(
+                    const_times, self.Bmatrix, self.buses, include_children=False
+                )
+            except Exception as e:
+                logging.error(f"Error creating constraints for bus {bus}: {e}")
+                # 如果出错，尝试逐个时间点创建约束
+                for time in const_times:
+                    try:
+                        bus.add_constraint(
+                            "power balance", time, bus.power_balance(time, self.Bmatrix, self.buses) == 0
+                        )
+                        if len(self.buses) > 1 and bus.isSwing:
+                            bus.add_constraint(
+                                "swing bus", time, bus.angle(time) == 0
+                            )
+                    except Exception as inner_e:
+                        logging.error(f"Error creating constraint for bus {bus} at time {time}: {inner_e}")
 
         # reset objective
         self.reset_objective()
         self.create_objective(const_times)
         # re-create system cost constraints
-        self._remove_component("system_cost_first_stage")
-        self._remove_component("system_cost_second_stage")
+        try:
+            self._remove_component("system_cost_first_stage")
+        except (AttributeError, KeyError):
+            pass
+        try:
+            self._remove_component("system_cost_second_stage")
+        except (AttributeError, KeyError):
+            pass
         if self._has_reserve:
-            self._remove_component("reserve")
+            try:
+                self._remove_component("reserve")
+            except (AttributeError, KeyError):
+                pass
         self.create_constraints(const_times, include_children=False)
 
         # recreating all constraints would be simpler

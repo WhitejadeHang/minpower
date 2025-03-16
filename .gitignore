@@ -61,3 +61,9 @@ ehthumbs.db
 Icon?
 Thumbs.db
 *~
+
+# 添加 .cursorignore 到 git 忽略规则
+.cursorignore
+
+# 添加 .cursorrules 到 git 忽略规则
+.cursorrules

@@ -272,7 +272,15 @@ def _setup_logging(pid=None):
     )
     # log to file if pid is set, unless in debugging mode
     if (user_config.output_prefix or user_config.pid) and not user_config.debugger:
-        kwds["filename"] = joindir(user_config.directory, "{}.log".format(pid))
+        # 确保pid不包含无效字符
+        if pid is not None:
+            # 移除可能导致路径无效的字符
+            pid_clean = str(pid).replace('"', '').replace("'", "").replace('\\', '').replace('/', '')
+            log_filename = "{}.log".format(pid_clean)
+        else:
+            log_filename = "minpower.log"
+        
+        kwds["filename"] = joindir(user_config.directory, log_filename)
     if (user_config.logging_level > 10) and ("filename" not in kwds):
         # don't log the time if debugging isn't turned on
         kwds["format"] = "%(levelname)s: %(message)s"

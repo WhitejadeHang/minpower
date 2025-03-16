@@ -108,9 +108,16 @@ def ts_from_csv(
 ):
     kwargs["header"] = 0 if is_df else None
 
-    return pd.read_csv(
-        filename, index_col=index_col, squeeze=squeeze, parse_dates=[0], **kwargs
+    # 读取CSV文件
+    result = pd.read_csv(
+        filename, index_col=index_col, parse_dates=[0], **kwargs
     )
+    
+    # 在新版pandas中，squeeze参数被移除，需要手动处理
+    if squeeze and isinstance(result, pd.DataFrame) and len(result.columns) == 1:
+        result = result.iloc[:, 0]
+        
+    return result
 
 
 def bool_to_int(x):

@@ -2,9 +2,10 @@
 Time and schedule related models.
 """
 
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime as dt
 from .commonscripts import *
 from operator import attrgetter
+import logging
 
 
 def get_schedule(filename):
@@ -13,7 +14,10 @@ def get_schedule(filename):
 
 def make_times_basic(N):
     """make a :class:`schedule.TimeIndex` of N times with hourly interval"""
-    return TimeIndex(date_range("00:00:00", periods=N, freq="H"))
+    # 使用当前日期作为起始点，避免只有一个时间点的问题
+    start_date = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    dates = date_range(start=start_date, periods=N, freq="H")
+    return TimeIndex(dates)
 
 
 def just_one_time():
@@ -22,7 +26,8 @@ def just_one_time():
 
 
 def make_constant_schedule(times, power=0):
-    return Series(power, times.strings.values)
+    # 确保使用列表形式的索引
+    return Series(power, index=times.strings.values)
 
 
 class TimeIndex(object):
@@ -31,15 +36,45 @@ class TimeIndex(object):
 
     def __init__(self, index, str_start=0):
         strings = ["t%02d" % (i + str_start) for i in range(len(index))]
-        self.times = index.copy()
+        # 确保index是日期时间对象
+        if isinstance(index, pd.Index):
+            # 检查是否为日期时间索引
+            if hasattr(index, 'dtype') and pd.api.types.is_datetime64_any_dtype(index.dtype):
+                self.times = index.copy()
+            else:
+                # 尝试转换为日期时间索引
+                try:
+                    self.times = pd.DatetimeIndex(index)
+                except:
+                    # 如果无法转换，创建一个默认的日期时间索引
+                    logging.warning("无法将索引转换为日期时间索引，使用默认日期")
+                    start_date = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                    self.times = pd.date_range(start=start_date, periods=len(index), freq="H")
+        else:
+            # 如果不是索引对象，尝试转换
+            try:
+                self.times = pd.DatetimeIndex(index)
+            except:
+                logging.warning("无法将输入转换为日期时间索引，使用默认日期")
+                start_date = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                self.times = pd.date_range(start=start_date, periods=len(index), freq="H")
+        
         self.strings = Series(strings, index=self.times)
         self._set = self.strings.values.tolist()
 
         self.get_interval()
-        self.Start = self.times[0]
+        
+        # 处理空的DatetimeIndex
+        if len(self.times) > 0:
+            self.Start = self.times[0]
+            self.End = self.times[-1] + self.interval
+        else:
+            # 如果时间索引为空，设置默认值
+            self.Start = pd.Timestamp('2000-01-01')
+            self.End = self.Start
+            self.interval = pd.Timedelta(hours=1)
+            
         self.startdate = self.Start.date()
-
-        self.End = self.times[-1] + self.interval
         self.span = self.End - self.Start
         self.spanhrs = hours(self.span)
 
@@ -58,16 +93,35 @@ class TimeIndex(object):
         self.initialTimestr = "tInit"
 
     def get_interval(self):
-        freq = self.strings.index.freq
-        if freq is not None:
-            self.interval = freq
-            if self.interval.freqstr == "H":
-                self.intervalhrs = self.interval.n
+        try:
+            # 尝试获取频率属性
+            freq = getattr(self.times, 'freq', None)
+            if freq is not None:
+                self.interval = freq
+                if hasattr(self.interval, 'freqstr') and self.interval.freqstr == "H":
+                    self.intervalhrs = self.interval.n
+                else:
+                    self.intervalhrs = getattr(self.interval, 'nanos', 3600000000000) / 1.0e9 / 3600.0
             else:
-                self.intervalhrs = self.interval.nanos / 1.0e9 / 3600.0
-        else:
-            self.interval = self.times[1] - self.times[0]
-            self.intervalhrs = self.interval.total_seconds() / 3600.0
+                # 如果没有freq属性，则计算时间间隔
+                if len(self.times) > 1:
+                    # 确保times是日期时间对象
+                    if isinstance(self.times[0], (pd.Timestamp, dt)):
+                        self.interval = self.times[1] - self.times[0]
+                        self.intervalhrs = self.interval.total_seconds() / 3600.0
+                    else:
+                        # 默认为1小时
+                        self.interval = pd.Timedelta(hours=1)
+                        self.intervalhrs = 1.0
+                else:
+                    # 如果只有一个时间点，默认为1小时
+                    self.interval = pd.Timedelta(hours=1)
+                    self.intervalhrs = 1.0
+        except (AttributeError, IndexError, TypeError) as e:
+            # 处理任何异常情况
+            logging.warning(f"计算时间间隔时出错: {e}，使用默认值1小时")
+            self.interval = pd.Timedelta(hours=1)
+            self.intervalhrs = 1.0
         return
 
     def __contains__(self, item):
@@ -112,9 +166,23 @@ class TimeIndex(object):
         return self.strings.index[-1 - self._int_overlap]
 
     def subdivide(self, division_hrs=24, overlap_hrs=0):
+        # 确保intervalhrs不为零
+        if self.intervalhrs == 0:
+            logging.error("intervalhrs不能为零")
+            # 创建一个空的TimeIndex并返回
+            empty_index = TimeIndex(pd.DatetimeIndex([]), 0)
+            # 返回一个包含空TimeIndex的列表
+            return [empty_index]
+            
         int_division = int(division_hrs / self.intervalhrs)
         int_overlap = int(overlap_hrs / self.intervalhrs)
         subsets = []
+        
+        # 如果没有足够的时间点进行划分，返回一个包含原始TimeIndex的列表
+        if len(self) < int_division:
+            logging.warning("时间点不足以进行划分，返回原始TimeIndex")
+            return [self]
+            
         for stg in range(int(len(self) / int_division)):
             start = stg * int_division
             end_point = start + int_division + int_overlap
